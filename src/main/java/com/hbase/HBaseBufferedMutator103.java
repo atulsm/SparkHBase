@@ -2,6 +2,7 @@ package com.hbase;
 
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -35,6 +36,7 @@ public class HBaseBufferedMutator103 implements Runnable {
 	private static final int POOL_SIZE = 5;
 	
 	private static final ExecutorService workerPool = Executors.newFixedThreadPool(POOL_SIZE);
+	private static final CountDownLatch latch = new CountDownLatch(POOL_SIZE);
 
 	public static void main(String[] args) throws Exception {
 		long start = System.currentTimeMillis();
@@ -43,6 +45,7 @@ public class HBaseBufferedMutator103 implements Runnable {
 			workerPool.submit(new HBaseBufferedMutator103());
 		}
 		
+		latch.await();
 		workerPool.shutdown();
 		workerPool.awaitTermination(1, TimeUnit.MINUTES);
 		
@@ -52,16 +55,19 @@ public class HBaseBufferedMutator103 implements Runnable {
 	
 	public void run() {
 		Configuration configuration = HBaseConfiguration.create();
+		System.out.println(configuration);
 		BufferedMutatorParams params = new BufferedMutatorParams(TABLE_NAME);
 		params.writeBufferSize(2097152*10);
 		
 		try{
 			Connection conn = ConnectionFactory.createConnection(configuration);
+			System.out.println(conn);
+
 			BufferedMutator mutator = conn.getBufferedMutator(params);		
 			
 			while(TASK_COUNT.decrementAndGet()>0){
 				Map<String, String> event = EventSimulator.getEvent(0);
-				Put p = getPutForEvent(event,true);
+				Put p = getPutForEvent(event,false);
 				mutator.mutate(p);
 				//mutator.flush();
 			}
@@ -71,6 +77,7 @@ public class HBaseBufferedMutator103 implements Runnable {
 		}catch(Exception e){
 			e.printStackTrace();
 		}		
+		latch.countDown();
 	}
 
 	public static Put getPutForEvent(Map<String, String> event,boolean block) {
@@ -78,7 +85,7 @@ public class HBaseBufferedMutator103 implements Runnable {
 		//Put put = new Put(new StringBuilder(uuid.toString()).reverse().toString().getBytes());
 		Put put = new Put(new StringBuilder(uuid.toString()).toString().getBytes());
 		
-		put.setDurability(Durability.SKIP_WAL);
+		//put.setDurability(Durability.SKIP_WAL);
 
 		
 		if(block){
