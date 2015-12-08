@@ -45,30 +45,56 @@ import scala.Tuple2;
  * 
  * @author atulsoman
  */
-public final class KafkaSparkHBaseElastic {
+public final class KafkaSparkHBaseElastic101 {
 	private static String checkpointDir = "hdfs://idcdvstl233:8020/tmp/KafkaSparkHBaseElastic";
+	private static boolean streamCheckPoint = false;
+	private static int duration = 10;
+	private static Configuration configuration = null;
+	private static Job newAPIJobConfiguration1 = null;
 	
-	private static CommandLineConfig config = null;
-	private static Configuration hbaseConfig = null;
-	private static Job newAPIJobConfiguration1 = null;	
+	private static boolean sendToHbase = true;
+	private static boolean sendToES = false;
 		
 	public static void main(String[] args) throws IOException {
 		Logger.getLogger("org").setLevel(Level.WARN);
 		Logger.getLogger("akka").setLevel(Level.WARN);		
-		config = new CommandLineConfig(args);
 		
-		hbaseConfig = HBaseConfiguration.create();
-		hbaseConfig.set(TableOutputFormat.OUTPUT_TABLE, "netiq:sentinel-events");
+		configuration = HBaseConfiguration.create();
+		configuration.set(TableOutputFormat.OUTPUT_TABLE, "netiq:sentinel-events");
 		
 		// new Hadoop API configuration for hbase write
-		newAPIJobConfiguration1 = Job.getInstance(hbaseConfig);
+		newAPIJobConfiguration1 = Job.getInstance(configuration);
 		newAPIJobConfiguration1.getConfiguration().set(TableOutputFormat.OUTPUT_TABLE, "netiq:sentinel-events");
-		newAPIJobConfiguration1.setOutputFormatClass(org.apache.hadoop.hbase.mapreduce.TableOutputFormat.class);					
+		newAPIJobConfiguration1.setOutputFormatClass(org.apache.hadoop.hbase.mapreduce.TableOutputFormat.class);
+				
+		if (args.length > 0) {
+			try {
+				duration = Integer.parseInt(args[0]);
+				System.out.println("duration changed to " + duration);
+			} catch (Exception e) {
+				System.out.println("Duration reset to defaults");
+			}
+			
+			if(args.length>1){
+				try{
+					streamCheckPoint = Boolean.getBoolean(args[1]);
+					System.out.println("streamCheckPoint changed to " + streamCheckPoint);
+				}catch (Exception e) {
+					System.out.println("streamCheckPoint reset to defaults");
+				}
+			}
+			
+			if(args.length>2){
+				checkpointDir = args[2];
+				System.out.println("checkpointDir changed to " + checkpointDir);
+			}			
+		}
+		
 		
 		JavaStreamingContext ssc = JavaStreamingContext.getOrCreate(checkpointDir,new JavaStreamingContextFactory() {			
 			@Override
 			public JavaStreamingContext create() {
-				return createContext(checkpointDir, config.duration);
+				return createContext(checkpointDir, streamCheckPoint, duration);
 			}
 		});
 		
@@ -78,7 +104,7 @@ public final class KafkaSparkHBaseElastic {
 	
 	
 	
-	public static JavaStreamingContext createContext(String checkpointDirectory, int duration) {
+	public static JavaStreamingContext createContext(String checkpointDirectory, boolean streamCheckPoint, int duration) {
 		SparkConf sparkConf = new SparkConf().setAppName("StreamingKafkaRecoverableDirectEvent");
 
 		// Only for running from eclipse
@@ -105,6 +131,10 @@ public final class KafkaSparkHBaseElastic {
 		JavaPairInputDStream<byte[], byte[]> messages = KafkaUtils.createDirectStream(ssc, byte[].class, byte[].class,
 				DefaultDecoder.class, DefaultDecoder.class, kafkaParams, topicsSet);
 		
+		if(streamCheckPoint){
+			messages.checkpoint(Durations.minutes(1));
+		}
+		
 		JavaDStream<Map<String, String>> lines = messages
 				.map(new Function<Tuple2<byte[], byte[]>, Map<String, String>>() {
 					@Override
@@ -118,55 +148,60 @@ public final class KafkaSparkHBaseElastic {
 					private void process(Map<String, String> ret) {
 						ret.put("obscountry", "US");
 					}
-				});		
+				});
+		
+		/**
+		JavaDStream<Map<String, String>> persistlines = lines.cache();		
+		
+		JavaPairDStream<String, Map<String, String>> hbaseEvent = persistlines.mapToPair(new PairFunction<Map<String,String>, String, Map<String,String>>() {
+			@Override
+			public Tuple2<String, Map<String,String>> call(Map<String, String> event) throws Exception {
+				return new Tuple2<String, Map<String,String>>(event.get("id"), event);
+			}
+		});
+		
+		
+		hbaseEvent.saveAsHadoopFiles(prefix, suffix);
+		*/
+		
+		
 
 		lines.foreachRDD(new Function<JavaRDD<Map<String, String>>, Void>() {
 			@Override
 			public Void call(JavaRDD<Map<String, String>> rdd) throws Exception {				
 				long start = System.currentTimeMillis();
 				JavaRDD<Map<String, String>> cachedRdd = rdd.persist(StorageLevel.MEMORY_ONLY());//rdd.cache();
+				long middle = System.currentTimeMillis();
 				
 				try{
-					if(config.parallelSave){
-						saveInParallel(cachedRdd);
-					}else{
-						saveRDDtoHBase(cachedRdd);
-						saveRDDtoES(cachedRdd);
-					}
+					Thread job1 = new Thread(){
+						public void run() {
+							saveRDDtoHBase(cachedRdd);
+						};
+					};
+					
+					Thread job2 = new Thread(){
+						public void run() {
+							saveRDDtoES(cachedRdd);
+						};
+					};
+					
+					job1.start();
+					job2.start();
+					
+					job1.join();
+					job2.join();
 					
 					cachedRdd.unpersist();
 				}finally{
-					long esSaveTime = System.currentTimeMillis() - start;
+					long esSaveTime = System.currentTimeMillis() - middle;
 					System.out.println(new Date() + "  Stats: TotalTime: " + esSaveTime);	
 				}
 				
 				return null;
 			}
-
-			private void saveInParallel(JavaRDD<Map<String, String>> cachedRdd) throws InterruptedException {
-				Thread job1 = new Thread(){
-					public void run() {
-						saveRDDtoHBase(cachedRdd);
-					};
-				};
-				
-				Thread job2 = new Thread(){
-					public void run() {
-						saveRDDtoES(cachedRdd);
-					};
-				};
-				
-				job1.start();
-				job2.start();
-				
-				job1.join();
-				job2.join();
-			}
 			
 			private Void saveRDDtoHBase(JavaRDD<Map<String, String>> rdd) {
-				if(!config.sendToHbase)
-					return null;
-				
 				long start = System.currentTimeMillis();
 				JavaPairRDD<ImmutableBytesWritable, Put> hbasePuts = rdd.mapToPair(new PairFunction<Map<String, String>, ImmutableBytesWritable, Put>() {
 					@Override
@@ -184,9 +219,6 @@ public final class KafkaSparkHBaseElastic {
 			}			
 
 			private Void saveRDDtoES(JavaRDD<Map<String, String>> rdd) {
-				if(!config.sendToES)
-					return null;
-				
 				long start = System.currentTimeMillis();
 				try {
 					Map<String, String> idmap = new HashMap<>();
