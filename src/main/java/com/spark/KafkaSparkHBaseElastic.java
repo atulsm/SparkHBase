@@ -45,8 +45,8 @@ import scala.Tuple2;
  * 
  * @author atulsoman
  */
-public final class KafkaToSparkTo_HBase_And_Elastic {
-	private static String checkpointDir = "hdfs://idcdvstl233:8020/tmp/KafkaToSparkTo_HBase_And_Elastic";
+public final class KafkaSparkHBaseElastic {
+	private static String checkpointDir = "hdfs://idcdvstl233:8020/tmp/KafkaSparkHBaseElastic";
 	private static boolean streamCheckPoint = false;
 	private static int duration = 10;
 	private static Configuration configuration = null;
