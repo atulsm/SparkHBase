@@ -4,7 +4,9 @@ import java.io.IOException;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import org.apache.hadoop.conf.Configuration;
@@ -20,6 +22,7 @@ import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.function.Function;
+import org.apache.spark.api.java.function.Function2;
 import org.apache.spark.api.java.function.PairFunction;
 import org.apache.spark.storage.StorageLevel;
 import org.apache.spark.streaming.Durations;
@@ -174,10 +177,47 @@ public final class KafkaSparkHBaseElasticMultiTable {
 				job2.join();
 			}
 			
+			
 			private Void saveRDDtoHBase(JavaRDD<Map<String, String>> rdd) {
 				if(!config.sendToHbase)
 					return null;
 				
+				if(config.singleTable){
+					return saveRDDtoHBase(rdd, "netiq:sentinel-events");
+				}
+				
+				long start = System.currentTimeMillis();				
+				List<String> tenants = rdd.map(new Function<Map<String,String>, String>() {
+					@Override
+					public String call(Map<String, String> event) throws Exception {
+						return event.get("rv39");
+					}
+				}).distinct().collect();
+				System.out.println("Tenant lists: " + tenants);
+				long middle = System.currentTimeMillis();
+				
+				/*
+				 * Iterate over all the tenants, apply filter to get only the events for each tenant
+				 * and persist only that
+				 */
+				JavaRDD<Map<String, String>> cachedRDD = rdd.cache();
+				for(String tenant : tenants){
+					JavaRDD<Map<String, String>> tenentRdd = cachedRDD.filter(new Function<Map<String,String>, Boolean>() {
+						@Override
+						public Boolean call(Map<String, String> event) throws Exception {
+							return tenant.equals(event.get("rv39"));
+						}
+					});
+					saveRDDtoHBase(tenentRdd, "netiq:sentinel-events-"+tenant);
+				}								
+			
+			    long hbaseSaveTime = System.currentTimeMillis() - start;
+				System.out.println(new Date() + "  Stats: HbaseSave: " + hbaseSaveTime + " , tenantListTime: " + (middle-start));				    
+				return null;
+			}		
+			
+			
+			private Void saveRDDtoHBase(JavaRDD<Map<String, String>> rdd,String tableName) {				
 				long start = System.currentTimeMillis();
 				JavaPairRDD<ImmutableBytesWritable, Put> hbasePuts = rdd.mapToPair(new PairFunction<Map<String, String>, ImmutableBytesWritable, Put>() {
 					@Override
@@ -187,10 +227,10 @@ public final class KafkaSparkHBaseElasticMultiTable {
 					}
 				});				
 				// save to HBase- Spark built-in API method
-			    hbasePuts.saveAsNewAPIHadoopDataset(getHbaseTableConfiguration("netiq:sentinel-events-default"));
+			    hbasePuts.saveAsNewAPIHadoopDataset(getHbaseTableConfiguration(tableName));
 			
 			    long hbaseSaveTime = System.currentTimeMillis() - start;
-				System.out.println(new Date() + "  Stats: HbaseSave: " + hbaseSaveTime);				    
+				System.out.println(new Date() + "  Stats: HbaseSave : " + tableName +" : " + hbaseSaveTime);				    
 				return null;
 			}			
 

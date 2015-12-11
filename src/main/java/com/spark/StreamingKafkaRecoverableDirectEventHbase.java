@@ -173,7 +173,7 @@ public final class StreamingKafkaRecoverableDirectEventHbase {
 				JavaPairRDD<ImmutableBytesWritable, Put> hbasePuts = rdd.mapToPair(new PairFunction<Map<String, String>, ImmutableBytesWritable, Put>() {
 					@Override
 					public Tuple2<ImmutableBytesWritable, Put> call(Map<String, String> event) throws Exception {					        
-						Put put = getPutForEvent(event, true);			     
+						Put put = getHbasePutForEvent(event, true);			     
 					    return new Tuple2<ImmutableBytesWritable, Put>(new ImmutableBytesWritable(), put);     
 					}
 				});
@@ -200,7 +200,7 @@ public final class StreamingKafkaRecoverableDirectEventHbase {
 		return ssc;
 	}
 	
-	public static Put getPutForEvent(Map<String, String> event,boolean block) {
+	public static Put getHbasePutForEvent(Map<String, String> event,boolean singleColumn) {
 		UUID uuid = UUID.randomUUID();
 		//Put put = new Put(new StringBuilder(uuid.toString()).reverse().toString().getBytes());
 		Put put = new Put(new StringBuilder(uuid.toString()).toString().getBytes());
@@ -208,7 +208,7 @@ public final class StreamingKafkaRecoverableDirectEventHbase {
 		//put.setDurability(Durability.SKIP_WAL);
 
 		
-		if(block){
+		if(singleColumn){
 			put.addColumn(Bytes.toBytes("evt"), "data".getBytes(), event.toString().getBytes());
 		}else{		
 			for (Map.Entry<String, String> entry : event.entrySet()) {
